@@ -158,8 +158,8 @@ def _audit_server(name: str, cfg: dict) -> ServerResult:
         key_lower = var_name.lower()
         is_sensitive_key = any(frag in key_lower for frag in _SENSITIVE_KEY_FRAGMENTS)
         findings = _scan_str_for_creds(var_val, f"env.{var_name}")
-        is_path_value = var_val.startswith(("/", "~", "./", "../")) or var_val.endswith((".json", ".pem", ".key", ".env"))
-        is_path_key = any(key_lower.endswith(sfx) for sfx in ("_path", "_dir", "_file", "_location", "_url"))
+        is_path_value = var_val.startswith(("/", "~", "./", "../", "http://", "https://")) or var_val.endswith((".json", ".pem", ".key", ".env"))
+        is_path_key = any(key_lower.endswith(sfx) for sfx in ("_path", "_dir", "_file", "_location", "_url", "_base", "_endpoint", "_host", "_uri"))
         if not findings and is_sensitive_key and not is_path_key and not is_path_value and len(var_val) > 8:
             # Key name implies a credential but pattern didn't match — flag generically
             findings = [Finding(
@@ -175,8 +175,12 @@ def _audit_server(name: str, cfg: dict) -> ServerResult:
     # Scan command and args
     cmd = cfg.get("command", "")
     args = cfg.get("args", [])
-    for i, part in enumerate(([cmd] if cmd else []) + (args if isinstance(args, list) else [])):
-        for f in _scan_str_for_creds(str(part), f"args[{i}]" if i else "command"):
+    if cmd:
+        for f in _scan_str_for_creds(cmd, "command"):
+            srv.score = min(srv.score + f.delta, 100)
+            srv.findings.append(f)
+    for i, part in enumerate(args if isinstance(args, list) else []):
+        for f in _scan_str_for_creds(str(part), f"args[{i}]"):
             srv.score = min(srv.score + f.delta, 100)
             srv.findings.append(f)
 

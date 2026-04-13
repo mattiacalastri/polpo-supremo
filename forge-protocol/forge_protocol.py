@@ -60,12 +60,13 @@ _VAGUE_PATTERNS = [
      "Close the list — models interpret 'etc.' unpredictably"),
 ]
 
+# Require at least 2 words after trigger to avoid matching bare "use"
 _NEGATION_RE = re.compile(
-    r"(?:never|do not|don't|avoid)\s+(\w+(?:\s+\w+){0,3})",
+    r"(?:never|do not|don't|avoid)\s+(\w+\s+\w+(?:\s+\w+){0,2})",
     re.IGNORECASE
 )
 _AFFIRMATION_RE = re.compile(
-    r"(?:always|must|should|use)\s+(\w+(?:\s+\w+){0,3})",
+    r"(?:always|must|should|use)\s+(\w+\s+\w+(?:\s+\w+){0,2})",
     re.IGNORECASE
 )
 _ABSOLUTE_RE = re.compile(r"\b(NEVER|ALWAYS|MUST|DO NOT|DON'T)\b", re.IGNORECASE)
@@ -157,8 +158,15 @@ def _detect_contradictions(text: str) -> list[LintFinding]:
 def lint_file(path: Path) -> FileReport:
     try:
         text = path.read_text(encoding="utf-8", errors="ignore")
-    except OSError:
-        return FileReport(path=path)
+    except OSError as e:
+        r = FileReport(path=path)
+        r.findings.append(LintFinding(
+            label="Unreadable file",
+            severity="error",
+            detail=str(e),
+            advice="Check file permissions",
+        ))
+        return r
 
     report = FileReport(path=path)
     report.word_count = len(text.split())
@@ -227,6 +235,13 @@ def lint_file(path: Path) -> FileReport:
             severity="warn",
             detail="Examples improve rule adherence significantly",
             advice="Add at least one example per non-obvious rule: 'e.g., use X not Y'",
+        ))
+    if not report.has_commands:
+        report.findings.append(LintFinding(
+            label="No command examples",
+            severity="warn",
+            detail="Command blocks help agents run the project without guessing",
+            advice="Add a ```bash block with install, run, and test commands",
         ))
 
     # Score

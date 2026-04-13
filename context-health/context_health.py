@@ -128,6 +128,7 @@ class ScanResult:
     root: Path
     files: list[FileResult] = field(default_factory=list)
     total_tokens: int = 0
+    total_files: int = 0   # all files scanned (including clean ones)
 
 
 # ── Analysis ───────────────────────────────────────────────────────────────────
@@ -258,6 +259,7 @@ def scan(targets: list[Path]) -> ScanResult:
     for path in files_to_scan:
         result = analyze_file(path)
         scan_result.total_tokens += result.tokens
+        scan_result.total_files += 1
         if result.score > 0 or result.tokens > FILE_WARN_TOKENS:
             scan_result.files.append(result)
 
@@ -294,8 +296,9 @@ def report(result: ScanResult, verbose: bool = False) -> int:
 
     high = sum(1 for f in flagged if f.risk_label == "HIGH")
     med  = sum(1 for f in flagged if f.risk_label == "MEDIUM")
+    clean = result.total_files - high - med
     color = ANSI["red"] if high else (ANSI["yellow"] if med else ANSI["green"])
-    print(f"\n  {color}HIGH: {high}  MEDIUM: {med}  CLEAN: {len(flagged) - high - med}{rst}\n")
+    print(f"\n  {color}HIGH: {high}  MEDIUM: {med}  CLEAN: {clean}{rst}\n")
 
     return 1 if high > 0 else 0
 
