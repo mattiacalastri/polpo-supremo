@@ -13,6 +13,7 @@ Usage:
 """
 from __future__ import annotations
 
+import os
 import re
 import sys
 from dataclasses import dataclass, field
@@ -80,7 +81,7 @@ _RULES_RAW: list[tuple[str, str, int, str]] = [
      "Dynamic code execution", 20,
      "Executes arbitrary code — avoid or sandbox strictly"),
 
-    (_p(r"pic", "kle", r"\.loads?\s*\("),
+    (_p(r"pic", "kle", r"(?:\.loads?\s*\(|\.", "Unp", "ickler", r"\s*\()"),
      "Unsafe deserialization", 20,
      "Unsafe deserialization — use json or msgpack for untrusted input"),
 
@@ -138,9 +139,23 @@ def _build_credential_rules() -> list[tuple]:
     ]
 
 
+# Placeholder values to exclude from hardcoded-credential false positives
+_PLACEHOLDER_RE = re.compile(
+    r"['\"](?:change.?me|placeholder|example|test[\w-]{0,10}|your[_-]?\w*|"
+    r"xxxx+|\.\.\.+|dummy|n/?a|\*{3,}|<[^>]{1,30}>|insert[\w\s]{0,15})['\"]",
+    re.IGNORECASE
+)
+_PLACEHOLDER_LABELS = {"Hardcoded credential assignment"}
+
+# General rules — IGNORECASE (keywords like 'password', 'eval', etc.)
 COMPILED_RULES: list[tuple] = [
     (re.compile(pat, re.IGNORECASE | re.MULTILINE), label, delta, advice)
-    for pat, label, delta, advice in (_RULES_RAW + _build_credential_rules())
+    for pat, label, delta, advice in _RULES_RAW
+]
+# Credential rules — case-sensitive (token formats are case-specific by spec)
+COMPILED_RULES += [
+    (re.compile(pat, re.MULTILINE), label, delta, advice)
+    for pat, label, delta, advice in _build_credential_rules()
 ]
 
 SCAN_EXTENSIONS = {".py", ".js", ".ts", ".jsx", ".tsx", ".go", ".rb", ".php", ".env"}
@@ -188,6 +203,8 @@ def scan_file(path: Path) -> FileResult:
 
     for pattern, label, delta, advice in COMPILED_RULES:
         matches = list(pattern.finditer(text))
+        if matches and label in _PLACEHOLDER_LABELS:
+            matches = [m for m in matches if not _PLACEHOLDER_RE.search(m.group(0))]
         if matches:
             line = text[: matches[0].start()].count("\n") + 1
             result.score += delta
@@ -209,9 +226,11 @@ def scan_path(target: Path) -> list[FileResult]:
         if target.suffix in SCAN_EXTENSIONS:
             results.append(scan_file(target))
     else:
-        for f in sorted(target.rglob("*")):
-            if f.is_file() and f.suffix in SCAN_EXTENSIONS:
-                if not any(p in f.parts for p in SKIP_DIRS):
+        for dirpath, dirnames, filenames in os.walk(str(target), followlinks=False):
+            dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
+            for filename in sorted(filenames):
+                f = Path(dirpath) / filename
+                if f.suffix in SCAN_EXTENSIONS:
                     results.append(scan_file(f))
     return results
 

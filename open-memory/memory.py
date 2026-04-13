@@ -19,6 +19,8 @@ from datetime import datetime, timezone
 from typing import Optional
 
 
+VERSION = "0.1.0"
+
 VALID_TYPES = {"user", "feedback", "project", "reference"}
 _FRONTMATTER_RE = re.compile(r'^---\n(.*?)\n---\n?(.*)', re.DOTALL)
 
@@ -152,6 +154,7 @@ class Memory:
 
     def _write_file(self, entry: MemoryEntry):
         path = self.base_dir / f"{entry.key}.md"
+        tmp = path.with_suffix('.tmp')
         content = (
             f"---\n"
             f"name: {entry.name}\n"
@@ -161,7 +164,8 @@ class Memory:
             f"---\n\n"
             f"{entry.content}\n"
         )
-        path.write_text(content, encoding='utf-8')
+        tmp.write_text(content, encoding='utf-8')
+        os.replace(tmp, path)  # atomic on POSIX — crash-safe
 
     def _read_file(self, path: Path) -> Optional[MemoryEntry]:
         try:
@@ -211,10 +215,12 @@ class Memory:
         return index
 
     def _save_index(self):
-        self._index_path.write_text(
+        tmp = self._index_path.with_suffix('.tmp')
+        tmp.write_text(
             json.dumps(self._index, indent=2, ensure_ascii=False),
             encoding='utf-8'
         )
+        os.replace(tmp, self._index_path)  # atomic on POSIX — crash-safe
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
