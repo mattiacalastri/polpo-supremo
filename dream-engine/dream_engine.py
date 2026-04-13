@@ -224,9 +224,13 @@ def _generate_summary(text: str, ents: Entities) -> str:
 
 
 def _add_links(text: str) -> str:
-    """Wrap linkable concepts in [[wiki-link]] format."""
+    """Wrap linkable concepts in [[wiki-link]] format (skip already-linked terms)."""
     def replacer(m: re.Match) -> str:
         word = m.group(0)
+        # Don't double-wrap if already inside [[...]]
+        start = m.start()
+        if start >= 2 and text[start - 2:start] == "[[":
+            return word
         return f"[[{word}]]"
     return _LINKABLE_CONCEPTS.sub(replacer, text)
 
@@ -250,14 +254,21 @@ def capture(text: str, source: Path = Path("<stdin>"), add_links: bool = True) -
 
 # ── Rendering ──────────────────────────────────────────────────────────────────
 
+def _yaml_str(s: str) -> str:
+    """Quote a string value for YAML if it contains special characters."""
+    if any(c in s for c in (':', '#', '[', ']', '{', '}', '|', '>', '!', '"', "'")):
+        return '"' + s.replace('\\', '\\\\').replace('"', '\\"') + '"'
+    return s
+
+
 def render_note(note: DreamNote) -> str:
     e = note.entities
     lines = [
         "---",
-        f"title: {note.title}",
-        f"summary: {note.summary[:100]}",
+        f"title: {_yaml_str(note.title)}",
+        f"summary: {_yaml_str(note.summary[:100])}",
         f"created: {note.created_at}",
-        f"source: {note.source}",
+        f"source: {_yaml_str(str(note.source))}",
     ]
     if e.people:    lines.append(f"people: [{', '.join(e.people[:5])}]")
     if e.dates:     lines.append(f"dates: [{', '.join(e.dates[:3])}]")
@@ -342,7 +353,11 @@ def main() -> None:
         note = capture(text, source, add_links=not no_links)
         rendered = render_note(note)
         out = _output_path(source, out_dir)
-        out.write_text(rendered, encoding="utf-8")
+        try:
+            out.write_text(rendered, encoding="utf-8")
+        except OSError as exc:
+            print(f"Error writing {out}: {exc}")
+            sys.exit(1)
 
         print(f"\n  {green}Captured:{rst} {out}")
         print(f"  {dim}Title:{rst} {note.title}")

@@ -197,16 +197,17 @@ def _find_mcp_config(src: Path) -> dict:
                 return data
             except (json.JSONDecodeError, OSError):
                 pass
-    # Check home dir
-    home = Path.home()
-    for name in MCP_CONFIG_NAMES:
-        p = home / name
-        if p.is_file():
-            try:
-                data = json.loads(p.read_text(encoding="utf-8"))
-                return data
-            except (json.JSONDecodeError, OSError):
-                pass
+    # Only fall back to home dir when explicitly exporting from home
+    if src == Path.home():
+        home = Path.home()
+        for name in MCP_CONFIG_NAMES:
+            p = home / name
+            if p.is_file():
+                try:
+                    data = json.loads(p.read_text(encoding="utf-8"))
+                    return data
+                except (json.JSONDecodeError, OSError):
+                    pass
     return {}
 
 
@@ -297,19 +298,32 @@ def _to_dict(bundle: SoulBundle) -> dict:
 
 
 def write_soul(bundle: SoulBundle, out: Path) -> None:
+    out.parent.mkdir(parents=True, exist_ok=True)
     data = json.dumps(_to_dict(bundle), indent=2, ensure_ascii=False)
-    if out.suffix == ".gz":
-        out.write_bytes(gzip.compress(data.encode("utf-8")))
-    else:
-        out.write_text(data, encoding="utf-8")
+    try:
+        if out.suffix == ".gz":
+            out.write_bytes(gzip.compress(data.encode("utf-8")))
+        else:
+            out.write_text(data, encoding="utf-8")
+    except OSError as exc:
+        print(f"Error writing {out}: {exc}")
+        sys.exit(1)
 
 
 def load_soul(path: Path) -> SoulBundle:
-    if path.suffix == ".gz":
-        raw = gzip.decompress(path.read_bytes()).decode("utf-8")
-    else:
-        raw = path.read_text(encoding="utf-8")
-    d = json.loads(raw)
+    try:
+        if path.suffix == ".gz":
+            raw = gzip.decompress(path.read_bytes()).decode("utf-8")
+        else:
+            raw = path.read_text(encoding="utf-8")
+    except (OSError, gzip.BadGzipFile) as exc:
+        print(f"Error reading {path}: {exc}")
+        sys.exit(1)
+    try:
+        d = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        print(f"Invalid .soul file {path}: {exc}")
+        sys.exit(1)
     return SoulBundle(
         schema=d.get("schema", ""),
         version=d.get("version", ""),
@@ -336,8 +350,19 @@ _VENDOR_INSTRUCTION_NAME = {
 _CRED_PLACEHOLDER_RE = re.compile(r"\[REDACTED[^\]]*\]")
 
 
-def import_soul(bundle: SoulBundle, dest: Path, vendor: str = "claude-code") -> list[str]:
-    """Reconstruct agent config from bundle. Returns list of written file paths."""
+def _safe_path(dest: Path, rel: str) -> Path | None:
+    """Resolve dest/rel and verify it stays within dest. Returns None on traversal."""
+    dest_abs = dest.resolve()
+    candidate = (dest / rel).resolve()
+    try:
+        candidate.relative_to(dest_abs)
+        return candidate
+    except ValueError:
+        return None
+
+
+def import_soul(bundle: SoulBundle, dest: Path, vendor: str = "claude-code") -> tuple[list[str], list[str]]:
+    """Reconstruct agent config from bundle. Returns (written_paths, needs_creds)."""
     dest.mkdir(parents=True, exist_ok=True)
     written = []
     needs_creds: list[str] = []
@@ -354,22 +379,25 @@ def import_soul(bundle: SoulBundle, dest: Path, vendor: str = "claude-code") -> 
         written.append(str(p))
     else:
         for instr in bundle.instructions:
+            rel = instr["filename"]
             if instr_name and vendor in ("claude-code", "gemini"):
-                # Rename primary instruction file to vendor convention
-                orig = Path(instr["filename"])
+                orig = Path(rel)
                 if orig.name in INSTRUCTION_NAMES:
-                    out_path = dest / orig.parent / instr_name
-                else:
-                    out_path = dest / instr["filename"]
-            else:
-                out_path = dest / instr["filename"]
+                    rel = str(orig.parent / instr_name)
+            out_path = _safe_path(dest, rel)
+            if out_path is None:
+                print(f"  ! Skipping unsafe path: {instr['filename']}")
+                continue
             out_path.parent.mkdir(parents=True, exist_ok=True)
             out_path.write_text(instr["content"], encoding="utf-8")
             written.append(str(out_path))
 
     # Memory files
     for mem in bundle.memory:
-        out_path = dest / mem["path"]
+        out_path = _safe_path(dest, mem["path"])
+        if out_path is None:
+            print(f"  ! Skipping unsafe path: {mem['path']}")
+            continue
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(mem["content"], encoding="utf-8")
         written.append(str(out_path))
@@ -591,7 +619,6 @@ def main() -> None:
         print()
 
     elif cmd == "import":
-        positional = [a for a in args[1:] if not a.startswith("-") and a not in ("--to", "--vendor")]
         to_val     = None
         vendor_val = "claude-code"
         if "--to" in args:
@@ -603,7 +630,7 @@ def main() -> None:
             if idx + 1 < len(args):
                 vendor_val = args[idx + 1]
 
-        # strip --to and --vendor values from positional
+        # Collect positionals, skipping flag names and their values
         skip_next = False
         clean_positional = []
         for a in args[1:]:
